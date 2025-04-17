@@ -1,0 +1,123 @@
+import logging
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+import asyncio
+import aiosqlite
+
+API_TOKEN = '7935399123:AAGfLRXdKW-Zh8PCqUJ_mLnA1D7jEmdCIAY'
+ADMIN_ID = 7592485294  # Asilbekning Telegram ID'si
+
+# Loglash
+logging.basicConfig(level=logging.INFO)
+
+# Bot va dispatcher
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+
+# Asosiy menyu tugmalari
+main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
+main_menu.add(
+    KeyboardButton("🚀 O'yinni boshlash"),
+    KeyboardButton("👥 Do‘st taklif qilish"),
+    KeyboardButton("💰 Hisobim"),
+    KeyboardButton("📤 Pul yechish")
+)
+
+# Ma'lumotlar bazasini sozlash
+async def init_db():
+    async with aiosqlite.connect("uzo_space.db") as db:
+        await db.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            coins INTEGER DEFAULT 0,
+            level INTEGER DEFAULT 1,
+            invited INTEGER DEFAULT 0,
+            inviter INTEGER DEFAULT 0
+        )''')
+        await db.commit()
+
+# Foydalanuvchini DBga qo‘shish
+async def add_user(user_id: int, inviter_id: int = 0):
+    async with aiosqlite.connect("uzo_space.db") as db:
+        user = await db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        if await user.fetchone() is None:
+            await db.execute("INSERT INTO users (user_id, inviter) VALUES (?, ?)", (user_id, inviter_id))
+            if inviter_id != 0:
+                await db.execute("UPDATE users SET invited = invited + 1 WHERE user_id = ?", (inviter_id,))
+                await db.execute("UPDATE users SET coins = coins + 100 WHERE user_id = ?", (inviter_id,))
+            await db.commit()
+
+# /start komandasi
+@dp.message_handler(commands=['start'])
+async def cmd_start(message: types.Message):
+    inviter_id = 0
+    if " " in message.text:
+        try:
+            inviter_id = int(message.text.split()[1])
+        except:
+            inviter_id = 0
+    await add_user(message.from_user.id, inviter_id)
+    await message.answer(f"Salom, {message.from_user.first_name}!\n"
+                         "UZO SPACE kosmik sarguzashtiga xush kelibsiz!", reply_markup=main_menu)
+
+# O'yinni boshlash
+@dp.message_handler(lambda msg: msg.text == "🚀 O'yinni boshlash")
+async def start_game(message: types.Message):
+    async with aiosqlite.connect("uzo_space.db") as db:
+        user = await db.execute("SELECT level, coins FROM users WHERE user_id = ?", (message.from_user.id,))
+        result = await user.fetchone()
+        level, coins = result or (1, 0)
+        if level > 25:
+            await message.answer("Siz allaqachon barcha 25 darajani o'tgansiz!")
+        else:
+            new_coins = 50
+            level += 1
+            coins += new_coins
+            await db.execute("UPDATE users SET level = ?, coins = ? WHERE user_id = ?",
+                             (level, coins, message.from_user.id))
+            await db.commit()
+            await message.answer(f"{level-1}-darajani tugalladingiz! +{new_coins} tanga.\n"
+                                 f"Yangi daraja: {level}/25")
+
+# Hisobni ko‘rish
+@dp.message_handler(lambda msg: msg.text == "💰 Hisobim")
+async def show_balance(message: types.Message):
+    async with aiosqlite.connect("uzo_space.db") as db:
+        user = await db.execute("SELECT coins, level, invited FROM users WHERE user_id = ?", (message.from_user.id,))
+        coins, level, invited = await user.fetchone()
+        await message.answer(f"💎 Tanga: {coins}\n"
+                             f"📈 Daraja: {level}/25\n"
+                             f"👥 Taklif qilgan do‘stlar: {invited}")
+
+# Taklif havolasi
+@dp.message_handler(lambda msg: msg.text == "👥 Do‘st taklif qilish")
+async def refer_link(message: types.Message):
+    link = f"https://t.me/uzo_space_bot?start={message.from_user.id}"
+    await message.answer(f"Do‘stlaringizni taklif qilish uchun ushbu havolani ulashing:\n{link}")
+
+# Pul yechish
+@dp.message_handler(lambda msg: msg.text == "📤 Pul yechish")
+async def withdraw(message: types.Message):
+    async with aiosqlite.connect("uzo_space.db") as db:
+        user = await db.execute("SELECT coins, invited FROM users WHERE user_id = ?", (message.from_user.id,))
+        coins, invited = await user.fetchone()
+        if invited < 5:
+            await message.answer("Pul yechish uchun kamida 5 ta aktiv do‘st taklif qilishingiz kerak!")
+        elif coins < 3490:
+            await message.answer("Minimal yechish 3490 tanga (10 RUB). Hozircha yetarli tangangiz yo‘q.")
+        else:
+            rub = coins // 349
+            await message.answer("So‘rovingiz yuborildi. Tez orada admin siz bilan bog‘lanadi.")
+            await bot.send_message(ADMIN_ID,
+                f"🧾 Pul yechish so‘rovi:\n"
+                f"👤 Ism: {message.from_user.full_name}\n"
+                f"🆔 ID: {message.from_user.id}\n"
+                f"💎 Tanga: {coins}\n"
+                f"💵 RUB: {rub}")
+
+# Botni ishga tushurish
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(init_db())
+    from aiogram import executor
+    executor.start_polling(dp, skip_updates=True)
